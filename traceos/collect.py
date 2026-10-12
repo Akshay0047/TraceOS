@@ -15,6 +15,8 @@ class Collector:
         psutil.cpu_percent(interval=None)
         self._pids = set(psutil.pids())
         self._io = psutil.disk_io_counters()
+        self._faults = _fault_counter()
+        self._ctx = int(psutil.cpu_stats().ctx_switches)
         self._t0 = time.perf_counter()
 
     def sample(self) -> Sample:
@@ -29,6 +31,15 @@ class Collector:
             read = max(0, int(io.read_bytes - self._io.read_bytes))
             write = max(0, int(io.write_bytes - self._io.write_bytes))
         self._io = io
+        faults_now = _fault_counter()
+        ctx_now = int(psutil.cpu_stats().ctx_switches)
+        if faults_now is None or self._faults is None:
+            fault_delta = 0
+        else:
+            fault_delta = max(0, faults_now - self._faults)
+        self._faults = faults_now
+        ctx_delta = max(0, ctx_now - self._ctx)
+        self._ctx = ctx_now
         return Sample(
             t=time.perf_counter() - self._t0,
             cpu_percent=cpu,
@@ -38,7 +49,53 @@ class Collector:
             read_bytes=read,
             write_bytes=write,
             running=_running(),
+            page_faults=fault_delta,
+            ctx_switches=ctx_delta,
         )
+
+
+def _fault_counter() -> int | None:
+    """Cumulative page faults for the whole machine. None if the OS will not say."""
+    system = platform.system()
+    if system == "Linux":
+        try:
+            with open("/proc/vmstat", encoding="ascii") as handle:
+                for line in handle:
+                    if line.startswith("pgfault "):
+                        return int(line.split()[1])
+        except (OSError, ValueError, IndexError):
+            return None
+        return None
+    if system == "Windows":
+        try:
+            return _windows_page_faults()
+        except (OSError, ValueError, IndexError):
+            return None
+    return None
+
+
+def _windows_page_faults() -> int:
+    import ctypes
+
+    ntdll = ctypes.WinDLL("ntdll")
+    query = ntdll.NtQuerySystemInformation
+    query.argtypes = [
+        ctypes.c_ulong,
+        ctypes.c_void_p,
+        ctypes.c_ulong,
+        ctypes.POINTER(ctypes.c_ulong),
+    ]
+    query.restype = ctypes.c_long
+    # SystemPerformanceInformation. PageFaultCount is a cumulative ULONG.
+    size = 512
+    buf = ctypes.create_string_buffer(size)
+    returned = ctypes.c_ulong(0)
+    status = query(2, buf, size, ctypes.byref(returned))
+    if status != 0:
+        raise OSError(status)
+    if returned.value < 64:
+        raise OSError("performance snapshot is too short")
+    return int.from_bytes(buf.raw[60:64], "little")
 
 
 def host_meta() -> dict:

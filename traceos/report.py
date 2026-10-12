@@ -21,13 +21,15 @@ def render_report(samples: list[Sample], detections: list[Detection], experiment
     if not detections:
         lines.append("No window was long enough to classify.")
     else:
-        lines.append("| Window | Label | OS concept | Decision path |")
-        lines.append("|---|---|---|---|")
+        lines.append("| Window | Label | Confidence | OS concept | Decision path |")
+        lines.append("|---|---|---:|---|---|")
         for detection in detections:
             title = CONCEPTS.get(detection.label, ("",))[0]
             path = " ; ".join(detection.rules)
+            mark = " unseen" if detection.outlier else ""
             lines.append(
-                f"| {detection.start}-{detection.end} | {detection.label} | {title} | {path} |"
+                f"| {detection.start}-{detection.end} | {detection.label}{mark} | "
+                f"{detection.confidence:.0%} | {title} | {path} |"
             )
     lines.extend(["", "## Derived jobs", ""])
     lines.append(
@@ -92,11 +94,67 @@ def render_report(samples: list[Sample], detections: list[Detection], experiment
             "",
             "## What the model is",
             "",
-            "The classifier is a depth-limited decision tree. It was trained on synthetic windows "
-            "whose labels are the five workload classes, with a little noise. Live samples from this "
-            "PC are classified by that tree. The decision path above is the explanation: the splits "
-            "the tree actually used, named as CPU scheduling, paging, process creation, or I/O.",
+            "Known patterns are classified by a depth-limited decision tree trained on synthetic "
+            "windows of the five workload classes, with a little noise. Confidence is the tree's "
+            "probability for the chosen leaf. An isolation forest, fit on the same synthetic windows, "
+            "marks a window that does not look like those classes. The decision path is the explanation: "
+            "the splits the tree actually used, named as CPU scheduling, paging, process creation, or I/O. "
+            "Page faults and context switches are recorded with each sample and are not inputs to the tree.",
             "",
         ]
     )
     return "\n".join(lines)
+
+
+def render_html(markdown: str) -> str:
+    """A single HTML page for the same report. Tables stay tables."""
+    import html as html_lib
+
+    parts = [
+        "<!DOCTYPE html>",
+        "<html><head><meta charset=\"utf-8\">",
+        "<title>Trace OS report</title>",
+        "<style>",
+        "body{font-family:Segoe UI,sans-serif;max-width:920px;margin:2rem auto;color:#1c2833;}",
+        "table{border-collapse:collapse;width:100%;margin:0.5rem 0 1.2rem;}",
+        "th,td{border:1px solid #d5dee8;padding:4px 8px;text-align:left;vertical-align:top;}",
+        "th{background:#e7eef5;}",
+        "code{background:#f4f7fa;padding:0 4px;}",
+        "</style></head><body>",
+    ]
+    rows: list[str] = []
+
+    def flush_table() -> None:
+        if not rows:
+            return
+        parts.append("<table>")
+        for index, row in enumerate(rows):
+            cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
+            tag = "th" if index == 0 else "td"
+            parts.append("<tr>" + "".join(f"<{tag}>{html_lib.escape(cell)}</{tag}>" for cell in cells) + "</tr>")
+        parts.append("</table>")
+        rows.clear()
+
+    for raw in markdown.splitlines():
+        line = raw.rstrip()
+        if line.startswith("|"):
+            if set(line.replace("|", "").replace("-", "").replace(":", "").strip()) == set():
+                continue
+            rows.append(line)
+            continue
+        flush_table()
+        if not line:
+            continue
+        if line.startswith("### "):
+            parts.append(f"<h3>{html_lib.escape(line[4:])}</h3>")
+        elif line.startswith("## "):
+            parts.append(f"<h2>{html_lib.escape(line[3:])}</h2>")
+        elif line.startswith("# "):
+            parts.append(f"<h1>{html_lib.escape(line[2:])}</h1>")
+        else:
+            text = html_lib.escape(line).replace("**", "")
+            text = text.replace("`", "")
+            parts.append(f"<p>{text}</p>")
+    flush_table()
+    parts.append("</body></html>")
+    return "\n".join(parts)

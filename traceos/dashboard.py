@@ -9,6 +9,7 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
+    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSpinBox,
     QSplitter,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -27,12 +29,12 @@ from .collect import Collector, host_meta
 from .detect import detect_windows, ensure_model
 from .explain import explain
 from .replay import run_experiment
-from .report import render_report
+from .report import render_html, render_report
 from .samples import Sample, load_trace, save_trace
 from .scenarios import demo_samples
 from .schedulers import format_gantt
 from .paths import DATA
-from .workloads import burn_cpu
+from .workloads import burst_io, burn_cpu, contained_lock_order, grow_memory, spawn_burst
 
 _LABEL_COLOR = {
     "normal": "#5c6b7a",
@@ -100,7 +102,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Trace OS")
-        self.resize(1180, 760)
+        self.resize(1180, 720)
         self.samples: list[Sample] = []
         self.detections = []
         self.experiment = None
@@ -118,19 +120,15 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(root)
 
         title = QLabel("Trace OS")
-        title.setStyleSheet("font-size: 22px; font-weight: 650;")
-        subtitle = QLabel("Observe  \u2192  Detect  \u2192  Explain  \u2192  Experiment  \u2192  Report")
-        subtitle.setStyleSheet("color: #3d4f63;")
+        title.setStyleSheet("font-size: 20px; font-weight: 650;")
         layout.addWidget(title)
-        layout.addWidget(subtitle)
 
         buttons = QHBoxLayout()
-        self.demo_btn = QPushButton("Load demo trace")
+        self.demo_btn = QPushButton("Demo trace")
         self.live_btn = QPushButton("Sample this PC (10s)")
-        self.open_btn = QPushButton("Open trace\u2026")
-        self.spike_btn = QPushButton("CPU spike (3s)")
-        self.save_btn = QPushButton("Export report\u2026")
-        for button in (self.demo_btn, self.live_btn, self.open_btn, self.spike_btn, self.save_btn):
+        self.open_btn = QPushButton("Open…")
+        self.save_btn = QPushButton("Export…")
+        for button in (self.demo_btn, self.live_btn, self.open_btn, self.save_btn):
             buttons.addWidget(button)
         buttons.addStretch(1)
         buttons.addWidget(QLabel("Frames"))
@@ -145,50 +143,105 @@ class MainWindow(QMainWindow):
         buttons.addWidget(self.quantum)
         layout.addLayout(buttons)
 
+        stress = QGroupBox("While sampling — push the live trace off normal")
+        stress_row = QHBoxLayout(stress)
+        stress_row.setContentsMargins(8, 8, 8, 8)
+        self.spike_btn = QPushButton("CPU spike")
+        self.mem_btn = QPushButton("Memory spike")
+        self.io_btn = QPushButton("Disk write")
+        self.spawn_btn = QPushButton("Spawn burst")
+        self.lock_btn = QPushButton("Lock order")
+        for button in (self.spike_btn, self.mem_btn, self.io_btn, self.spawn_btn, self.lock_btn):
+            button.setProperty("role", "stress")
+            stress_row.addWidget(button)
+        stress_row.addStretch(1)
+        layout.addWidget(stress)
+
+        self.summary = QLabel("Load a trace to see the result.")
+        self.summary.setWordWrap(True)
+        self.summary.setStyleSheet("font-size: 14px; font-weight: 600; padding: 4px 0;")
+        layout.addWidget(self.summary)
+
         self.demo_btn.clicked.connect(self.load_demo)
         self.live_btn.clicked.connect(self.start_live)
         self.open_btn.clicked.connect(self.open_trace)
         self.spike_btn.clicked.connect(self.spike)
+        self.mem_btn.clicked.connect(
+            lambda: self._stress("Memory spike running — resident set climbs for 3 seconds.", lambda: grow_memory(3), "Memory spike finished.")
+        )
+        self.io_btn.clicked.connect(
+            lambda: self._stress("Disk write running for 3 seconds.", lambda: burst_io(3), "Disk write finished.")
+        )
+        self.spawn_btn.clicked.connect(
+            lambda: self._stress("Spawn burst running.", lambda: spawn_burst(3), "Spawn burst finished.")
+        )
+        self.lock_btn.clicked.connect(self.lock_order)
         self.save_btn.clicked.connect(self.export_report)
         self.frames.valueChanged.connect(lambda _v: self._recompute())
         self.quantum.valueChanged.connect(lambda _v: self._recompute())
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(0, 0, 0, 0)
         self.spark = Spark()
-        left_layout.addWidget(self.spark)
-        self.sample_table = _table(["t", "CPU %", "Mem %", "Processes", "Born", "Write KB", "Running"])
-        left_layout.addWidget(self.sample_table)
-        splitter.addWidget(left)
-
-        right = QWidget()
-        right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.addWidget(QLabel("Detections"))
-        self.detect_table = _table(["Window", "Label", "OS concept"])
+        self.spark.setMaximumHeight(168)
+        self.sample_table = _table(
+            ["t", "CPU %", "Mem %", "Processes", "Born", "Write KB", "Running", "Faults", "Ctx sw"]
+        )
+        self.detect_table = _table(["Window", "Label", "OS concept", "Conf"])
         self.detect_table.itemSelectionChanged.connect(self._show_detection)
-        right_layout.addWidget(self.detect_table, 2)
         self.detail = QTextEdit()
         self.detail.setReadOnly(True)
         self.detail.setFont(QFont("Consolas", 10))
-        right_layout.addWidget(self.detail, 3)
-        right_layout.addWidget(QLabel("Scheduling  (derived jobs)"))
         self.sched_table = _table(["Algorithm", "Avg wait", "Avg turnaround", "Avg response"])
         self.sched_table.itemSelectionChanged.connect(self._show_schedule)
-        right_layout.addWidget(self.sched_table, 2)
         self.gantt = QTextEdit()
         self.gantt.setReadOnly(True)
-        self.gantt.setFont(QFont("Consolas", 10))
-        self.gantt.setMaximumHeight(140)
-        right_layout.addWidget(self.gantt)
-        right_layout.addWidget(QLabel("Paging"))
+        self.gantt.setFont(QFont("Consolas", 11))
+        self.gantt.setMaximumHeight(72)
         self.page_table = _table(["Algorithm", "Faults", "Fault rate"])
-        right_layout.addWidget(self.page_table, 2)
-        splitter.addWidget(right)
-        splitter.setSizes([640, 520])
-        layout.addWidget(splitter, 1)
+
+        now = QWidget()
+        now_layout = QHBoxLayout(now)
+        now_layout.setContentsMargins(0, 8, 0, 0)
+        story = QVBoxLayout()
+        story.addWidget(self.spark)
+        story.addWidget(QLabel("Click a window"))
+        story.addWidget(self.detect_table, 1)
+        now_layout.addLayout(story, 1)
+        explain_col = QVBoxLayout()
+        explain_col.addWidget(QLabel("Why this label"))
+        explain_col.addWidget(self.detail, 1)
+        now_layout.addLayout(explain_col, 1)
+
+        samples_page = QWidget()
+        samples_layout = QVBoxLayout(samples_page)
+        samples_layout.setContentsMargins(0, 8, 0, 0)
+        samples_layout.addWidget(self.sample_table)
+
+        algorithms = QWidget()
+        algo_layout = QVBoxLayout(algorithms)
+        algo_layout.setContentsMargins(0, 8, 0, 0)
+        compare = QSplitter(Qt.Orientation.Horizontal)
+        sched_box = QWidget()
+        sched_layout = QVBoxLayout(sched_box)
+        sched_layout.setContentsMargins(0, 0, 0, 0)
+        sched_layout.addWidget(QLabel("Scheduling — same trace as jobs"))
+        sched_layout.addWidget(self.sched_table)
+        page_box = QWidget()
+        page_layout = QVBoxLayout(page_box)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.addWidget(QLabel("Paging — same trace as page ids"))
+        page_layout.addWidget(self.page_table)
+        compare.addWidget(sched_box)
+        compare.addWidget(page_box)
+        compare.setSizes([640, 420])
+        algo_layout.addWidget(compare, 1)
+        algo_layout.addWidget(QLabel("Selected schedule"))
+        algo_layout.addWidget(self.gantt)
+
+        self.tabs = QTabWidget()
+        self.tabs.addTab(now, "Result")
+        self.tabs.addTab(algorithms, "Algorithms")
+        self.tabs.addTab(samples_page, "Samples")
+        layout.addWidget(self.tabs, 1)
         self.load_demo()
 
     def load_demo(self) -> None:
@@ -217,16 +270,44 @@ class MainWindow(QMainWindow):
         self._recompute()
 
     def spike(self) -> None:
-        self.statusBar().showMessage("Pegging every logical CPU for 3 seconds.")
-        threading.Thread(target=lambda: burn_cpu(3), daemon=True).start()
+        self._stress("CPU spike running for 3 seconds.", lambda: burn_cpu(3), "CPU spike finished.")
+
+    def _stress(self, message: str, work, done: str) -> None:
+        self.statusBar().showMessage(message)
+        generation = self._generation
+
+        def run() -> None:
+            try:
+                work()
+            except Exception as exc:
+                self._bridge.ready.emit(generation, f"Stress failed: {exc}")
+                return
+            self._bridge.ready.emit(generation, done)
+
+        threading.Thread(target=run, name="traceos-stress", daemon=True).start()
+
+    def lock_order(self) -> None:
+        def work() -> None:
+            text = contained_lock_order()
+            self._bridge.ready.emit(self._generation, text)
+
+        self.statusBar().showMessage("Two threads take locks in opposite orders, then give up.")
+        threading.Thread(target=work, name="traceos-locks", daemon=True).start()
 
     def export_report(self) -> None:
         if not self.samples:
             return
-        path, _selected = QFileDialog.getSaveFileName(self, "Export report", str(DATA / "report.md"), "Markdown (*.md)")
+        path, _selected = QFileDialog.getSaveFileName(
+            self,
+            "Export report",
+            str(DATA / "report.md"),
+            "Markdown (*.md);;HTML (*.html)",
+        )
         if not path:
             return
         text = render_report(self.samples, self.detections, self.experiment)
+        if path.lower().endswith(".html"):
+            text = render_html(text)
         from pathlib import Path
 
         Path(path).write_text(text, encoding="utf-8")
@@ -252,7 +333,12 @@ class MainWindow(QMainWindow):
         self._sample_thread.start()
 
     def _on_sample(self, generation: int, sample: object) -> None:
-        if generation != self._generation or self._collector is None:
+        if generation != self._generation:
+            return
+        if isinstance(sample, str):
+            self.statusBar().showMessage(sample)
+            return
+        if self._collector is None:
             return
         if isinstance(sample, Exception):
             self._stop_live()
@@ -285,6 +371,19 @@ class MainWindow(QMainWindow):
             [sample.cpu_percent for sample in self.samples],
             [sample.mem_percent for sample in self.samples],
         )
+        self._fill_summary()
+
+    def _fill_summary(self) -> None:
+        if not self.detections or self.experiment is None:
+            self.summary.setText("No window yet. A window is five samples.")
+            return
+        labels = "  ·  ".join(item.label.replace("_", " ") for item in self.detections)
+        best = min(self.experiment.schedules, key=lambda item: item.avg_waiting)
+        paging = min(self.experiment.paging, key=lambda item: item.faults)
+        self.summary.setText(
+            f"{labels}\nLowest wait {best.name} {best.avg_waiting:.2f}   ·   "
+            f"Fewest faults {paging.name} {paging.faults}"
+        )
 
     def _fill_samples(self) -> None:
         table = self.sample_table
@@ -298,6 +397,8 @@ class MainWindow(QMainWindow):
                 str(sample.proc_born),
                 f"{sample.write_bytes / 1024:.0f}",
                 str(sample.running),
+                str(sample.page_faults),
+                str(sample.ctx_switches),
             ]
             for column, value in enumerate(values):
                 table.setItem(row, column, QTableWidgetItem(value))
@@ -317,7 +418,8 @@ class MainWindow(QMainWindow):
                 break
         for row, detection in enumerate(self.detections):
             title = CONCEPTS.get(detection.label, ("",))[0]
-            values = [f"{detection.start}\u2013{detection.end}", detection.label, title]
+            label = detection.label + (" ?" if detection.outlier else "")
+            values = [f"{detection.start}\u2013{detection.end}", label, title, f"{detection.confidence:.0%}"]
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 if column == 1:
@@ -373,15 +475,7 @@ class MainWindow(QMainWindow):
         if row < 0:
             row = 0
         chosen = self.experiment.schedules[row]
-        jobs = "   ".join(
-            f"{job.jid} arr {job.arrival} burst {job.burst} pri {job.priority}" for job in self.experiment.jobs
-        )
-        lines = [jobs, "", format_gantt(chosen)]
-        for job in chosen.jobs:
-            lines.append(
-                f"{job.jid:<4} start {job.start:<4} finish {job.finish:<4} wait {job.waiting:<4} turn {job.turnaround}"
-            )
-        self.gantt.setPlainText("\n".join(lines))
+        self.gantt.setPlainText(format_gantt(chosen))
 
     def closeEvent(self, event) -> None:
         self._stop_live()
@@ -412,9 +506,15 @@ def run() -> int:
         QPushButton { background: #1f4e79; color: white; border: none; padding: 6px 12px; border-radius: 4px; }
         QPushButton:hover { background: #2d6aa3; }
         QPushButton:disabled { background: #9aa8b5; }
+        QPushButton[role="stress"] { background: #e7eef5; color: #1c2833; }
+        QPushButton[role="stress"]:hover { background: #d3e0ec; }
         QTableWidget { background: white; alternate-background-color: #f7fafc; gridline-color: #e6edf3; }
         QHeaderView::section { background: #e7eef5; padding: 4px; border: none; font-weight: 600; }
-        QTextEdit, QSpinBox { background: white; }
+        QTextEdit, QSpinBox, QTabWidget::pane { background: white; }
+        QTabBar::tab { background: #e7eef5; padding: 6px 14px; margin-right: 2px; }
+        QTabBar::tab:selected { background: white; font-weight: 600; }
+        QGroupBox { font-weight: 600; border: 1px solid #d5dee8; border-radius: 6px; margin-top: 8px; }
+        QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }
         QStatusBar { background: #e7eef5; }
         """
     )

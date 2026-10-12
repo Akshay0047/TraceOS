@@ -1,0 +1,135 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+2 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+3 0 obj
+<< /Length 3385 >>
+stream
+BT
+/F2 16 Tf
+1 0 0 1 54 740 Tm
+(Trace OS) Tj
+/F2 13 Tf
+1 0 0 1 54 716 Tm
+(Two-minute speaking script) Tj
+/F1 11 Tf
+1 0 0 1 54 696 Tm
+(Read this at a steady pace. It covers existing systems, the proposed pipeline, and what is) Tj
+/F1 11 Tf
+1 0 0 1 54 681 Tm
+(implemented.) Tj
+/F2 13 Tf
+1 0 0 1 54 658 Tm
+(Existing systems) Tj
+/F1 11 Tf
+1 0 0 1 54 638 Tm
+(System monitors show CPU and memory at one instant, then forget them. A slow leak, a spawn) Tj
+/F1 11 Tf
+1 0 0 1 54 623 Tm
+(storm, or rising disk use never becomes a history. Algorithm simulators run FCFS, paging,) Tj
+/F1 11 Tf
+1 0 0 1 54 608 Tm
+(and deadlock examples correctly, but only on numbers typed in by hand. Learning models) Tj
+/F1 11 Tf
+1 0 0 1 54 593 Tm
+(inside eBPF are fast, and they target networks and security. They do not name a scheduling) Tj
+/F1 11 Tf
+1 0 0 1 54 578 Tm
+(or paging decision, and they do not replay a captured trace.) Tj
+/F2 13 Tf
+1 0 0 1 54 555 Tm
+(Proposed system) Tj
+/F1 11 Tf
+1 0 0 1 54 535 Tm
+(Trace OS is one pipeline on one trace. Observe a window of real signals. Detect the) Tj
+/F1 11 Tf
+1 0 0 1 54 520 Tm
+(workload. Explain it with the operating-system concept behind it. Replay that same trace) Tj
+/F1 11 Tf
+1 0 0 1 54 505 Tm
+(through classical algorithms, and write the comparison down. The aim is teaching. The demo) Tj
+/F1 11 Tf
+1 0 0 1 54 490 Tm
+(needs no network and no language model.) Tj
+/F2 13 Tf
+1 0 0 1 54 467 Tm
+(Implementation) Tj
+/F1 11 Tf
+1 0 0 1 54 447 Tm
+(Observation uses psutil on Windows and on Linux. Once a second it records CPU, memory,) Tj
+/F1 11 Tf
+1 0 0 1 54 432 Tm
+(process births, disk bytes, tasks actually executing, page faults, and context switches. One) Tj
+/F1 11 Tf
+1 0 0 1 54 417 Tm
+(system snapshot counts those executing tasks, so the window does not open every process.) Tj
+/F1 11 Tf
+1 0 0 1 54 402 Tm
+(These numbers are not the kernel run queue and not the page tables. Detection is a) Tj
+/F1 11 Tf
+1 0 0 1 54 387 Tm
+(depth-limited decision tree trained on synthetic windows: normal, CPU saturation, memory) Tj
+/F1 11 Tf
+1 0 0 1 54 372 Tm
+(growth, a spawn storm, or heavy I/O. One tree ships so the splits can be read aloud. Each) Tj
+/F1 11 Tf
+1 0 0 1 54 357 Tm
+(detection has a confidence score, and an isolation forest marks a window unlike those five) Tj
+/F1 11 Tf
+1 0 0 1 54 342 Tm
+(classes. The path is named CPU scheduling, memory and paging, process creation, or blocking) Tj
+/F1 11 Tf
+1 0 0 1 54 327 Tm
+(I/O. Each window becomes a job and each sample a page id. FCFS, SJF, SRTF, priority, and) Tj
+/F1 11 Tf
+1 0 0 1 54 312 Tm
+(round robin run beside FIFO, LRU, and optimal, on that same trace. The dashboard shows the) Tj
+/F1 11 Tf
+1 0 0 1 54 297 Tm
+(Gantt chart and the fault counts. Frames and the round-robin quantum rerun the tables. The) Tj
+/F1 11 Tf
+1 0 0 1 54 282 Tm
+(lab can peg the CPUs, climb memory, start a few processes, write a file, or collide two lock) Tj
+/F1 11 Tf
+1 0 0 1 54 267 Tm
+(orders and give up. The report exports as Markdown or HTML.) Tj
+/F2 13 Tf
+1 0 0 1 54 244 Tm
+(Left out on purpose) Tj
+/F1 11 Tf
+1 0 0 1 54 224 Tm
+(eBPF, a local language model, Banker's algorithm, and cgroups are not in this build. Random) Tj
+/F1 11 Tf
+1 0 0 1 54 209 Tm
+(forests and XGBoost were proposed. The readable tree is what shipped, so the explanation) Tj
+/F1 11 Tf
+1 0 0 1 54 194 Tm
+(stays the path the model actually took.) Tj
+ET
+endstream
+endobj
+4 0 obj
+<< /Type /Page /Parent 5 0 R /MediaBox [0 0 612 792] /Contents 3 0 R /Resources << /Font << /F1 1 0 R /F2 2 0 R >> >> >>
+endobj
+5 0 obj
+<< /Type /Pages /Count 1 /Kids [4 0 R] >>
+endobj
+6 0 obj
+<< /Type /Catalog /Pages 5 0 R >>
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000000079 00000 n 
+0000000154 00000 n 
+0000003591 00000 n 
+0000003727 00000 n 
+0000003784 00000 n 
+trailer << /Size 7 /Root 6 0 R >>
+startxref
+3833
+%%EOF

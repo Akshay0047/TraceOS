@@ -38,10 +38,17 @@ def explain(detection: Detection) -> str:
     title, summary = CONCEPTS.get(detection.label, ("Unclassified", "No concept is mapped to this label."))
     features = "\n".join(f"  {name:<14} {value:.3g}" for name, value in detection.features.items())
     rules = "\n".join(f"  {rule}" for rule in detection.rules) or "  (leaf reached with no split)"
+    note = ""
+    if detection.outlier:
+        note = (
+            "\n\nThis window does not look like the five training classes. "
+            "The label is still the nearest tree leaf, and the isolation forest marked it unseen."
+        )
     return (
         f"{detection.label}   samples {detection.start}-{detection.end}\n"
-        f"{title}\n\n"
-        f"{summary}\n\n"
+        f"{title}\n"
+        f"Confidence {detection.confidence:.0%}\n\n"
+        f"{summary}{note}\n\n"
         f"Window features\n{features}\n\n"
         f"Decision path\n{rules}"
     )

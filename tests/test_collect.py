@@ -34,3 +34,5 @@ def test_one_live_sample_returns_quickly():
     assert sample.proc_count >= 1
     assert sample.cpu_percent >= 0
     assert sample.running >= 0
+    assert sample.page_faults >= 0
+    assert sample.ctx_switches >= 0

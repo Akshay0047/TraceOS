@@ -36,6 +36,9 @@ def test_demo_trace_labels_follow_the_five_phases():
     text = explain(detections[1])
     assert "CPU scheduling" in text
     assert "Decision path" in text
+    assert "Confidence" in text
+    assert all(item.confidence >= 0.8 for item in detections)
+    assert not any(item.outlier for item in detections)
     paths = {item.label: " ".join(item.rules) for item in detections}
     assert "spawn_per_s" in paths["spawn_storm"]
     assert "mem_slope" in paths["memory_growth"]
@@ -53,6 +56,11 @@ def test_demo_replay_separates_policies_and_optimal_wins_or_ties():
     report = render_report(demo_samples(), detect_windows(demo_samples(), train_model()), experiment)
     assert "spawn_storm" in report
     assert "SRTF" in report
+    from traceos.report import render_html
+
+    page = render_html(report)
+    assert "<h1>Trace OS report</h1>" in page
+    assert "<table>" in page
 
 
 def test_trace_roundtrip(tmp_path: Path):
@@ -61,3 +69,12 @@ def test_trace_roundtrip(tmp_path: Path):
     loaded, meta = load_trace(path)
     assert meta["host"] == "test"
     assert loaded == demo_samples()
+    old = tmp_path / "old.json"
+    old.write_text(
+        '{"samples":[{"t":0,"cpu_percent":1,"mem_percent":2,"proc_count":3,'
+        '"proc_born":0,"read_bytes":0,"write_bytes":0,"running":1}]}',
+        encoding="utf-8",
+    )
+    loaded_old, _meta = load_trace(old)
+    assert loaded_old[0].page_faults == 0
+    assert loaded_old[0].ctx_switches == 0

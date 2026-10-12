@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import joblib
 import numpy as np
+from sklearn.ensemble import IsolationForest
 from sklearn.tree import DecisionTreeClassifier
 
 from .features import FEATURE_NAMES, vector, window_features, iter_windows
@@ -14,6 +15,7 @@ from .samples import Sample
 from .scenarios import synthesize
 
 _MODEL: DecisionTreeClassifier | None = None
+_OUTLIER: IsolationForest | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +25,8 @@ class Detection:
     label: str
     features: dict[str, float]
     rules: tuple[str, ...]
+    confidence: float = 1.0
+    outlier: bool = False
 
 
 def train_model(seed: int = 0) -> DecisionTreeClassifier:
@@ -84,13 +88,28 @@ def _fmt(name: str, value: float) -> str:
     return f"{value:.3g}"
 
 
+def ensure_outlier() -> IsolationForest:
+    """Flags windows that do not look like the five synthetic classes."""
+    global _OUTLIER
+    if _OUTLIER is None:
+        rows, _labels = synthesize(seed=0)
+        model = IsolationForest(n_estimators=80, contamination=0.02, random_state=0)
+        model.fit(rows)
+        _OUTLIER = model
+    return _OUTLIER
+
+
 def detect_windows(samples: list[Sample], model: DecisionTreeClassifier | None = None) -> list[Detection]:
     model = model or ensure_model()
+    outlier_model = ensure_outlier()
     found: list[Detection] = []
     for start, window in iter_windows(samples):
         feats = window_features(window)
         row = np.asarray([vector(feats)], dtype=float)
         label = str(model.predict(row)[0])
+        proba = model.predict_proba(row)[0]
+        confidence = float(proba.max()) if len(proba) else 1.0
+        unseen = int(outlier_model.predict(row)[0]) == -1
         found.append(
             Detection(
                 start=start,
@@ -98,6 +117,8 @@ def detect_windows(samples: list[Sample], model: DecisionTreeClassifier | None =
                 label=label,
                 features=feats,
                 rules=tuple(decision_rules(model, row[0])),
+                confidence=confidence,
+                outlier=unseen,
             )
         )
     return found

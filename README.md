@@ -1,23 +1,37 @@
 # Trace OS
 
-An MVP of the operating-systems project: watch a machine, classify the workload, say which OS concept explains it, and replay that same trace through scheduling and paging.
+Watch a machine, classify the workload, name the operating-system concept that explains it, and replay that same trace through scheduling and paging.
 
 Observe → Detect → Explain → Experiment → Report.
 
-## What the MVP does
+## What this build does
 
-- Samples CPU, memory, process count, new processes, disk bytes, and running processes once a second (`psutil`, so it runs on Windows and on Linux / WSL).
-- Classifies each 5-sample window as normal, CPU saturation, memory growth, a spawn storm, or heavy I/O.
-- Shows the decision-tree path and the OS concept that goes with the class: scheduling, paging, process creation, or blocking I/O.
-- Turns the trace into jobs and a page-reference string, then runs FCFS, SJF, SRTF, Priority, and Round Robin, plus FIFO, LRU, and Optimal.
+**Observe.** Once a second, on Windows or on Linux, the collector records CPU, memory percent, process count, new processes, disk bytes, tasks currently executing, page faults, and context switches. The executing-task count is one system snapshot. It does not open a handle to every process. Samples are aggregated into windows of five. A single reading is never classified on its own.
 
-The tree is trained on synthetic windows with known labels, so the splits stay readable and the demo works offline. Live samples from this PC are what the tree classifies afterwards. The jobs and page ids are a teaching projection of the trace, not a copy of the kernel run queue or the page tables. The report states that in place.
+**Detect.** A depth-limited decision tree, trained on synthetic windows with known labels, classifies each window as normal, CPU saturation, memory growth, a spawn storm, or heavy I/O. Confidence is the tree's probability for that leaf. An isolation forest, fit on the same synthetic windows, marks a window that does not look like those five classes.
 
-Not in this MVP: eBPF, a local LLM, Banker's algorithm, cgroups.
+**Explain.** The tree's splits are shown as a decision path and named as an OS concept: CPU scheduling, memory and paging, process creation, or blocking I/O.
+
+**Experiment.** Each window becomes one job, and each sample contributes one page id. The same trace is run through FCFS, SJF, SRTF, priority, and round robin, and through FIFO, LRU, and optimal paging. The jobs and page ids are a teaching projection of the trace. They are not the kernel run queue and not the page tables.
+
+**Report.** The desktop window shows the trace, the detections, the scheduler table, and the paging table. **Export report…** writes Markdown or HTML.
+
+**Workload lab.** Short, contained stressors for a live sample: peg every logical CPU, climb resident memory, write a temporary file, start a few short-lived processes, or take two locks in opposite orders and give up before the process hangs.
+
+## Not in this build
+
+These were considered and left out:
+
+- eBPF, and any in-kernel model
+- a local language model
+- Banker's algorithm
+- cgroups
+- Random Forest and XGBoost as the classifier. A single tree is used so the explanation can quote the splits.
+- a full per-process tree of open files and threads. Walking every process froze the window.
+
+Page faults and context switches are recorded and shown. They are not inputs to the tree. The tree splits on CPU, memory slope, spawn rate, and I/O, which is what keeps the five classes separable.
 
 ## Run
-
-From `C:\Projects\TraceOS`:
 
 ```powershell
 python -m venv .venv
@@ -25,20 +39,32 @@ python -m venv .venv
 .venv\Scripts\python.exe -m traceos
 ```
 
-`python -m traceos` with no arguments opens the window. `run_dashboard.bat` does the same.
+On Linux or WSL, use `.venv/bin/python -m traceos` after the same install.
+
+`python -m traceos` with no arguments opens the window. `run_dashboard.bat` does the same on Windows.
+
+If the terminal prints a Qt font note and no window appears, that terminal has `QT_QPA_PLATFORM=offscreen`. Clear it and start again:
+
+```powershell
+Remove-Item Env:QT_QPA_PLATFORM -ErrorAction SilentlyContinue
+.venv\Scripts\python.exe -m traceos
+```
 
 In the window:
 
-1. **Load demo trace** is already applied at startup. Five phases, one class each. Click a row to read the explanation. The scheduler table is the same trace as jobs. Change **Frames** or **RR quantum** to rerun the algorithms.
-2. **Sample this PC (10s)** records a live trace and saves `data\live.json`.
-3. **CPU spike (3s)** pegs every logical CPU. Press it while a sample is running if you want the live trace to leave the normal class.
-4. **Export report…** writes the markdown report.
+1. **Demo trace** is already applied at startup. The line under the buttons names the five phases, the scheduler with the lowest wait, and the paging policy with the fewest faults. **Result** is the chart, the windows, and the explanation. **Algorithms** is the comparison. **Samples** is the raw table.
+2. **Sample this PC (10s)** records a live trace and saves `data/live.json`.
+3. The stress buttons run only while that sample is going, if you want the live trace to leave the normal class.
+4. **Export…** writes Markdown or HTML.
 
-Terminal, if you do not want the window:
+From the terminal:
 
 ```powershell
 .venv\Scripts\python.exe -m traceos demo
-.venv\Scripts\python.exe -m traceos collect --seconds 10 --out data\live.json
-.venv\Scripts\python.exe -m traceos report data\live.json --out data\report.md
+.venv\Scripts\python.exe -m traceos collect --seconds 10 --out data/live.json
+.venv\Scripts\python.exe -m traceos report data/live.json --out data/report.md
+.venv\Scripts\python.exe -m traceos report data/live.json --out data/report.html
 .venv\Scripts\python.exe -m pytest -q
 ```
+
+A two-minute speaking script for the existing-versus-proposed comparison and the implementation is in `docs/two-minute-script.pdf`.

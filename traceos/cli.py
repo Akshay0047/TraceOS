@@ -80,8 +80,12 @@ def main(argv: list[str] | None = None) -> int:
         text = _report(samples, args.frames, args.quantum)
         from pathlib import Path
 
+        from .report import render_html
+
         path = Path(args.out)
         path.parent.mkdir(parents=True, exist_ok=True)
+        if path.suffix.lower() == ".html":
+            text = render_html(text)
         path.write_text(text, encoding="utf-8")
         print(f"wrote {path}")
         return 0

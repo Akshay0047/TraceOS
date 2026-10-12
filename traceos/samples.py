@@ -17,6 +17,8 @@ class Sample:
     read_bytes: int
     write_bytes: int
     running: int
+    page_faults: int = 0
+    ctx_switches: int = 0
 
 
 def save_trace(path: str | Path, samples: list[Sample], meta: dict | None = None) -> None:
@@ -38,6 +40,8 @@ def load_trace(path: str | Path) -> tuple[list[Sample], dict]:
             read_bytes=int(row["read_bytes"]),
             write_bytes=int(row["write_bytes"]),
             running=int(row["running"]),
+            page_faults=int(row.get("page_faults", 0)),
+            ctx_switches=int(row.get("ctx_switches", 0)),
         )
         for row in payload["samples"]
     ]
