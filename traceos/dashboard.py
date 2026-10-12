@@ -9,15 +9,13 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
-    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QMainWindow,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
-    QSplitter,
-    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -52,57 +50,92 @@ class _SampleBridge(QObject):
 
 
 class Spark(QWidget):
+    """CPU and memory, each stretched to its own range so a small change is visible."""
+
     def __init__(self) -> None:
         super().__init__()
         self.cpu: list[float] = []
         self.mem: list[float] = []
-        self.setMinimumHeight(150)
+        self.focus: tuple[int, int] | None = None
+        self.setMinimumHeight(220)
 
     def set_series(self, cpu: list[float], mem: list[float]) -> None:
         self.cpu = cpu
         self.mem = mem
         self.update()
 
+    def set_focus(self, start: int, end: int) -> None:
+        self.focus = (start, end)
+        self.update()
+
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.fillRect(self.rect(), QColor("#ffffff"))
-        rect = self.rect().adjusted(36, 16, -12, -22)
+        rect = self.rect().adjusted(52, 12, -52, -28)
+        if len(self.cpu) < 2 or len(self.mem) < 2:
+            painter.setPen(QColor("#8b9aab"))
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "Waiting for samples")
+            return
+        cpu_lo, cpu_hi = _bounds(self.cpu)
+        mem_lo, mem_hi = _bounds(self.mem)
+        if self.focus is not None and len(self.cpu) > 1:
+            start, end = self.focus
+            span = len(self.cpu) - 1
+            x0 = rect.left() + rect.width() * max(0, start) / span
+            x1 = rect.left() + rect.width() * min(span, end) / span
+            painter.fillRect(int(x0), rect.top(), max(2, int(x1 - x0)), rect.height(), QColor(31, 78, 121, 28))
         painter.setPen(QPen(QColor("#e1e8ef")))
         for step in range(5):
             y = rect.bottom() - rect.height() * step / 4
             painter.drawLine(rect.left(), int(y), rect.right(), int(y))
-            painter.setPen(QColor("#8b9aab"))
-            painter.drawText(4, int(y) + 4, f"{step * 25}")
+            painter.setPen(QColor("#b03a2e"))
+            painter.drawText(4, int(y) + 4, f"{cpu_lo + (cpu_hi - cpu_lo) * step / 4:.0f}")
+            painter.setPen(QColor("#1f4e79"))
+            label = f"{mem_lo + (mem_hi - mem_lo) * step / 4:.0f}"
+            painter.drawText(rect.right() + 8, int(y) + 4, label)
             painter.setPen(QPen(QColor("#e1e8ef")))
-        _stroke(painter, rect, self.cpu, QColor("#b03a2e"))
-        _stroke(painter, rect, self.mem, QColor("#1f4e79"))
+        _stroke(painter, rect, self.cpu, cpu_lo, cpu_hi, QColor("#b03a2e"))
+        _stroke(painter, rect, self.mem, mem_lo, mem_hi, QColor("#1f4e79"))
         painter.setPen(QColor("#b03a2e"))
-        painter.drawText(rect.left(), self.height() - 6, "CPU %")
+        painter.drawText(rect.left(), self.height() - 8, f"CPU  {min(self.cpu):.0f}–{max(self.cpu):.0f}%")
         painter.setPen(QColor("#1f4e79"))
-        painter.drawText(rect.left() + 56, self.height() - 6, "Memory %")
+        painter.drawText(rect.left() + 120, self.height() - 8, f"Memory  {min(self.mem):.1f}–{max(self.mem):.1f}%")
 
 
-def _stroke(painter: QPainter, rect, values: list[float], color: QColor) -> None:
-    if len(values) < 2:
+def _bounds(values: list[float]) -> tuple[float, float]:
+    lo, hi = min(values), max(values)
+    span = hi - lo
+    if span < 0.5:
+        pad = 1.0
+    else:
+        pad = span * 0.2
+    return lo - pad, hi + pad
+
+
+def _stroke(painter: QPainter, rect, values: list[float], lo: float, hi: float, color: QColor) -> None:
+    if len(values) < 2 or hi <= lo:
         return
-    painter.setPen(QPen(color, 2))
+    painter.setPen(QPen(color, 2.5))
     last = None
     span = len(values) - 1
     for index, value in enumerate(values):
         x = rect.left() + rect.width() * index / span
-        y = rect.bottom() - rect.height() * max(0.0, min(100.0, value)) / 100
+        y = rect.bottom() - rect.height() * (value - lo) / (hi - lo)
         point = (x, y)
         if last is not None:
             painter.drawLine(int(last[0]), int(last[1]), int(point[0]), int(point[1]))
+        painter.setBrush(color)
+        painter.drawEllipse(int(x) - 3, int(y) - 3, 6, 6)
         last = point
+    painter.setBrush(Qt.BrushStyle.NoBrush)
 
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Trace OS")
-        self.resize(1180, 720)
+        self.resize(1200, 780)
         self.samples: list[Sample] = []
         self.detections = []
         self.experiment = None
@@ -143,9 +176,8 @@ class MainWindow(QMainWindow):
         buttons.addWidget(self.quantum)
         layout.addLayout(buttons)
 
-        stress = QGroupBox("While sampling — push the live trace off normal")
-        stress_row = QHBoxLayout(stress)
-        stress_row.setContentsMargins(8, 8, 8, 8)
+        stress_row = QHBoxLayout()
+        stress_row.addWidget(QLabel("During a sample"))
         self.spike_btn = QPushButton("CPU spike")
         self.mem_btn = QPushButton("Memory spike")
         self.io_btn = QPushButton("Disk write")
@@ -155,11 +187,10 @@ class MainWindow(QMainWindow):
             button.setProperty("role", "stress")
             stress_row.addWidget(button)
         stress_row.addStretch(1)
-        layout.addWidget(stress)
+        layout.addLayout(stress_row)
 
-        self.summary = QLabel("Load a trace to see the result.")
-        self.summary.setWordWrap(True)
-        self.summary.setStyleSheet("font-size: 14px; font-weight: 600; padding: 4px 0;")
+        self.summary = QLabel("")
+        self.summary.setStyleSheet("color: #3d4f63;")
         layout.addWidget(self.summary)
 
         self.demo_btn.clicked.connect(self.load_demo)
@@ -181,67 +212,53 @@ class MainWindow(QMainWindow):
         self.quantum.valueChanged.connect(lambda _v: self._recompute())
 
         self.spark = Spark()
-        self.spark.setMaximumHeight(168)
+        layout.addWidget(self.spark, 2)
+
         self.sample_table = _table(
             ["t", "CPU %", "Mem %", "Processes", "Born", "Write KB", "Running", "Faults", "Ctx sw"]
         )
-        self.detect_table = _table(["Window", "Label", "OS concept", "Conf"])
+        self.sample_table.setVisible(False)
+        self.sample_table.setMaximumHeight(150)
+        self.samples_btn = QPushButton("Samples")
+        self.samples_btn.setCheckable(True)
+        self.samples_btn.setProperty("role", "stress")
+        self.samples_btn.toggled.connect(self.sample_table.setVisible)
+        buttons.addWidget(self.samples_btn)
+
+        self.detect_table = _table(["Window", "What happened", "OS concept", "Conf"])
         self.detect_table.itemSelectionChanged.connect(self._show_detection)
         self.detail = QTextEdit()
         self.detail.setReadOnly(True)
-        self.detail.setFont(QFont("Consolas", 10))
-        self.sched_table = _table(["Algorithm", "Avg wait", "Avg turnaround", "Avg response"])
+        self.detail.setFont(QFont("Segoe UI", 10))
+        self.sched_table = _table(["Algorithm", "Avg wait", "Turnaround", "Response"])
         self.sched_table.itemSelectionChanged.connect(self._show_schedule)
         self.gantt = QTextEdit()
         self.gantt.setReadOnly(True)
-        self.gantt.setFont(QFont("Consolas", 11))
-        self.gantt.setMaximumHeight(72)
+        self.gantt.setFont(QFont("Consolas", 10))
+        self.gantt.setMaximumHeight(52)
         self.page_table = _table(["Algorithm", "Faults", "Fault rate"])
 
-        now = QWidget()
-        now_layout = QHBoxLayout(now)
-        now_layout.setContentsMargins(0, 8, 0, 0)
-        story = QVBoxLayout()
-        story.addWidget(self.spark)
-        story.addWidget(QLabel("Click a window"))
-        story.addWidget(self.detect_table, 1)
-        now_layout.addLayout(story, 1)
+        body = QHBoxLayout()
+        body.setSpacing(16)
+        windows = QVBoxLayout()
+        windows.addWidget(_heading("Windows"))
+        windows.addWidget(self.detect_table)
+        windows.addStretch(1)
         explain_col = QVBoxLayout()
-        explain_col.addWidget(QLabel("Why this label"))
+        explain_col.addWidget(_heading("Explanation"))
         explain_col.addWidget(self.detail, 1)
-        now_layout.addLayout(explain_col, 1)
-
-        samples_page = QWidget()
-        samples_layout = QVBoxLayout(samples_page)
-        samples_layout.setContentsMargins(0, 8, 0, 0)
-        samples_layout.addWidget(self.sample_table)
-
-        algorithms = QWidget()
-        algo_layout = QVBoxLayout(algorithms)
-        algo_layout.setContentsMargins(0, 8, 0, 0)
-        compare = QSplitter(Qt.Orientation.Horizontal)
-        sched_box = QWidget()
-        sched_layout = QVBoxLayout(sched_box)
-        sched_layout.setContentsMargins(0, 0, 0, 0)
-        sched_layout.addWidget(QLabel("Scheduling — same trace as jobs"))
-        sched_layout.addWidget(self.sched_table)
-        page_box = QWidget()
-        page_layout = QVBoxLayout(page_box)
-        page_layout.setContentsMargins(0, 0, 0, 0)
-        page_layout.addWidget(QLabel("Paging — same trace as page ids"))
-        page_layout.addWidget(self.page_table)
-        compare.addWidget(sched_box)
-        compare.addWidget(page_box)
-        compare.setSizes([640, 420])
-        algo_layout.addWidget(compare, 1)
-        algo_layout.addWidget(QLabel("Selected schedule"))
-        algo_layout.addWidget(self.gantt)
-
-        self.tabs = QTabWidget()
-        self.tabs.addTab(now, "Result")
-        self.tabs.addTab(algorithms, "Algorithms")
-        self.tabs.addTab(samples_page, "Samples")
-        layout.addWidget(self.tabs, 1)
+        algorithms = QVBoxLayout()
+        algorithms.addWidget(_heading("Scheduling"))
+        algorithms.addWidget(self.sched_table)
+        algorithms.addWidget(self.gantt)
+        algorithms.addWidget(_heading("Paging"))
+        algorithms.addWidget(self.page_table)
+        algorithms.addStretch(1)
+        body.addLayout(windows, 4)
+        body.addLayout(explain_col, 5)
+        body.addLayout(algorithms, 4)
+        layout.addLayout(body, 3)
+        layout.addWidget(self.sample_table)
         self.load_demo()
 
     def load_demo(self) -> None:
@@ -377,12 +394,11 @@ class MainWindow(QMainWindow):
         if not self.detections or self.experiment is None:
             self.summary.setText("No window yet. A window is five samples.")
             return
-        labels = "  ·  ".join(item.label.replace("_", " ") for item in self.detections)
         best = min(self.experiment.schedules, key=lambda item: item.avg_waiting)
         paging = min(self.experiment.paging, key=lambda item: item.faults)
         self.summary.setText(
-            f"{labels}\nLowest wait {best.name} {best.avg_waiting:.2f}   ·   "
-            f"Fewest faults {paging.name} {paging.faults}"
+            f"Lowest waiting time: {best.name} {best.avg_waiting:.2f}"
+            f"      Fewest page faults: {paging.name} {paging.faults}"
         )
 
     def _fill_samples(self) -> None:
@@ -418,7 +434,7 @@ class MainWindow(QMainWindow):
                 break
         for row, detection in enumerate(self.detections):
             title = CONCEPTS.get(detection.label, ("",))[0]
-            label = detection.label + (" ?" if detection.outlier else "")
+            label = detection.label.replace("_", " ") + (" ?" if detection.outlier else "")
             values = [f"{detection.start}\u2013{detection.end}", label, title, f"{detection.confidence:.0%}"]
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
@@ -428,6 +444,7 @@ class MainWindow(QMainWindow):
         if self.detections:
             table.selectRow(pick)
         table.blockSignals(False)
+        _fit(table)
         self._show_detection()
 
     def _fill_schedules(self) -> None:
@@ -450,6 +467,7 @@ class MainWindow(QMainWindow):
         if schedules:
             table.selectRow(best)
         table.blockSignals(False)
+        _fit(table)
         self._show_schedule()
 
     def _fill_paging(self) -> None:
@@ -459,13 +477,16 @@ class MainWindow(QMainWindow):
         for row, item in enumerate(paging):
             for column, value in enumerate((item.name, str(item.faults), f"{item.fault_rate:.0%}")):
                 table.setItem(row, column, QTableWidgetItem(value))
+        _fit(table)
 
     def _show_detection(self) -> None:
         row = self.detect_table.currentRow()
         if row < 0 or row >= len(self.detections):
-            self.detail.setPlainText("Load a trace or sample this PC. A window is five samples.")
+            self.detail.setPlainText("Click a window. Each window is five samples.")
             return
-        self.detail.setPlainText(explain(self.detections[row]))
+        chosen = self.detections[row]
+        self.spark.set_focus(chosen.start, chosen.end)
+        self.detail.setPlainText(explain(chosen))
 
     def _show_schedule(self) -> None:
         if self.experiment is None or not self.experiment.schedules:
@@ -483,6 +504,25 @@ class MainWindow(QMainWindow):
         if thread is not None:
             thread.join(timeout=1.0)
         super().closeEvent(event)
+
+
+def _heading(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+    label.setStyleSheet("font-weight: 650;")
+    return label
+
+
+def _fit(table: QTableWidget) -> None:
+    table.resizeRowsToContents()
+    header = table.horizontalHeader().height()
+    if header < 24:
+        header = 28
+    row_h = table.rowHeight(0) if table.rowCount() else 24
+    if row_h < 18:
+        row_h = 24
+    height = header + 8 + row_h * table.rowCount()
+    table.setFixedHeight(height)
 
 
 def _table(headers: list[str]) -> QTableWidget:

@@ -52,7 +52,7 @@ Remove-Item Env:QT_QPA_PLATFORM -ErrorAction SilentlyContinue
 
 In the window:
 
-1. **Demo trace** is already applied at startup. The line under the buttons names the five phases, the scheduler with the lowest wait, and the paging policy with the fewest faults. **Result** is the chart, the windows, and the explanation. **Algorithms** is the comparison. **Samples** is the raw table.
+1. **Demo trace** is already applied at startup. The chart, the windows, the explanation, and the algorithm tables are on one screen. Click a window to shade it on the chart. **Samples** shows the raw table.
 2. **Sample this PC (10s)** records a live trace and saves `data/live.json`.
 3. The stress buttons run only while that sample is going, if you want the live trace to leave the normal class.
 4. **Export…** writes Markdown or HTML.
