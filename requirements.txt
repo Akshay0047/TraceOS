@@ -1,0 +1,5 @@
+psutil>=6
+numpy>=2
+scikit-learn>=1.5
+PySide6-Essentials>=6.6
+pytest>=8
