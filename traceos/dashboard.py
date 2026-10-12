@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication,
@@ -41,6 +41,12 @@ _LABEL_COLOR = {
     "spawn_storm": "#b9770e",
     "io_heavy": "#1a5276",
 }
+
+
+class _SampleBridge(QObject):
+    """Carries a live sample from the worker thread back to the window."""
+
+    ready = Signal(int, object)
 
 
 class Spark(QWidget):
@@ -100,6 +106,10 @@ class MainWindow(QMainWindow):
         self.experiment = None
         self._collector: Collector | None = None
         self._remaining = 0
+        self._generation = 0
+        self._sample_thread: threading.Thread | None = None
+        self._bridge = _SampleBridge(self)
+        self._bridge.ready.connect(self._on_sample)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
 
@@ -225,7 +235,30 @@ class MainWindow(QMainWindow):
     def _tick(self) -> None:
         if self._collector is None:
             return
-        self.samples.append(self._collector.sample())
+        thread = self._sample_thread
+        if thread is not None and thread.is_alive():
+            return
+        collector = self._collector
+        generation = self._generation
+
+        def work() -> None:
+            try:
+                sample: object = collector.sample()
+            except Exception as exc:
+                sample = exc
+            self._bridge.ready.emit(generation, sample)
+
+        self._sample_thread = threading.Thread(target=work, name="traceos-sample", daemon=True)
+        self._sample_thread.start()
+
+    def _on_sample(self, generation: int, sample: object) -> None:
+        if generation != self._generation or self._collector is None:
+            return
+        if isinstance(sample, Exception):
+            self._stop_live()
+            self.statusBar().showMessage("Sample failed.")
+            return
+        self.samples.append(sample)
         self._remaining -= 1
         self._recompute()
         self.statusBar().showMessage(f"Sampling \u2014 {self._remaining} s left")
@@ -236,6 +269,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Saved {path}")
 
     def _stop_live(self) -> None:
+        self._generation += 1
         self._timer.stop()
         self._collector = None
         self.live_btn.setEnabled(True)
@@ -351,6 +385,9 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._stop_live()
+        thread = self._sample_thread
+        if thread is not None:
+            thread.join(timeout=1.0)
         super().closeEvent(event)
 
 

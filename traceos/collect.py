@@ -61,11 +61,157 @@ def collect_seconds(seconds: int, interval: float = 1.0) -> list[Sample]:
 
 
 def _running() -> int:
-    count = 0
-    for proc in psutil.process_iter(["status"]):
+    """Tasks currently executing, without opening a handle to every process.
+
+    On Windows, psutil's status means "not suspended" and opens every process.
+    That walk takes seconds on the UI thread. One system snapshot counts
+    threads in the Running state, excluding the idle process.
+    """
+    system = platform.system()
+    if system == "Linux":
         try:
-            if proc.info["status"] == psutil.STATUS_RUNNING:
-                count += 1
-        except (psutil.Error, KeyError):
+            return max(0, _linux_procs_running())
+        except (OSError, ValueError, IndexError):
+            return 0
+    if system == "Windows":
+        try:
+            return _windows_executing()
+        except (OSError, ValueError, IndexError, OverflowError):
+            return 0
+    try:
+        return max(0, int(round(psutil.getloadavg()[0])))
+    except (OSError, AttributeError):
+        return 0
+
+
+def _linux_procs_running(path: str = "/proc/stat") -> int:
+    with open(path, encoding="ascii") as handle:
+        for line in handle:
+            if line.startswith("procs_running "):
+                return int(line.split()[1])
+    raise OSError("procs_running missing")
+
+
+def _windows_executing() -> int:
+    import ctypes
+
+    ntdll = ctypes.WinDLL("ntdll")
+    query = ntdll.NtQuerySystemInformation
+    query.argtypes = [
+        ctypes.c_ulong,
+        ctypes.c_void_p,
+        ctypes.c_ulong,
+        ctypes.POINTER(ctypes.c_ulong),
+    ]
+    query.restype = ctypes.c_long
+    proc_type, thread_type = _windows_structs()
+    proc_size = ctypes.sizeof(proc_type)
+    thread_size = ctypes.sizeof(thread_type)
+    state_offset = thread_type.ThreadState.offset
+    mismatch = ctypes.c_long(0xC0000004).value
+    size = 0x20000
+    while True:
+        buf = ctypes.create_string_buffer(size)
+        returned = ctypes.c_ulong(0)
+        status = query(5, buf, size, ctypes.byref(returned))
+        if status == mismatch:
+            size = max(size * 2, int(returned.value) + 0x1000)
             continue
-    return count
+        if status != 0:
+            raise OSError(status)
+        data = buf.raw
+        break
+    offset = 0
+    executing = 0
+    limit = len(data)
+    while offset + proc_size <= limit:
+        entry = proc_type.from_buffer_copy(data, offset)
+        pid = int(entry.UniqueProcessId or 0)
+        if entry.NextEntryOffset:
+            region_end = min(limit, offset + int(entry.NextEntryOffset))
+        else:
+            region_end = limit
+        thread_at = offset + proc_size
+        room = max(0, (region_end - thread_at) // thread_size)
+        for index in range(min(int(entry.NumberOfThreads), room)):
+            at = thread_at + index * thread_size + state_offset
+            state = int.from_bytes(data[at : at + 4], "little")
+            if state == 2 and pid != 0:
+                executing += 1
+        if not entry.NextEntryOffset:
+            break
+        offset += int(entry.NextEntryOffset)
+    return executing
+
+
+def _windows_structs():
+    import ctypes
+    from ctypes import wintypes
+
+    class UNICODE_STRING(ctypes.Structure):
+        _fields_ = [
+            ("Length", wintypes.USHORT),
+            ("MaximumLength", wintypes.USHORT),
+            ("Buffer", ctypes.c_void_p),
+        ]
+
+    class CLIENT_ID(ctypes.Structure):
+        _fields_ = [
+            ("UniqueProcess", ctypes.c_void_p),
+            ("UniqueThread", ctypes.c_void_p),
+        ]
+
+    class SYSTEM_THREAD_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("KernelTime", ctypes.c_longlong),
+            ("UserTime", ctypes.c_longlong),
+            ("CreateTime", ctypes.c_longlong),
+            ("WaitTime", wintypes.ULONG),
+            ("StartAddress", ctypes.c_void_p),
+            ("ClientId", CLIENT_ID),
+            ("Priority", wintypes.LONG),
+            ("BasePriority", wintypes.LONG),
+            ("ContextSwitches", wintypes.ULONG),
+            ("ThreadState", wintypes.ULONG),
+            ("WaitReason", wintypes.ULONG),
+        ]
+
+    class SYSTEM_PROCESS_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("NextEntryOffset", wintypes.ULONG),
+            ("NumberOfThreads", wintypes.ULONG),
+            ("WorkingSetPrivateSize", ctypes.c_longlong),
+            ("HardFaultCount", wintypes.ULONG),
+            ("NumberOfThreadsHighWatermark", wintypes.ULONG),
+            ("CycleTime", ctypes.c_ulonglong),
+            ("CreateTime", ctypes.c_longlong),
+            ("UserTime", ctypes.c_longlong),
+            ("KernelTime", ctypes.c_longlong),
+            ("ImageName", UNICODE_STRING),
+            ("BasePriority", wintypes.LONG),
+            ("UniqueProcessId", ctypes.c_void_p),
+            ("InheritedFromUniqueProcessId", ctypes.c_void_p),
+            ("HandleCount", wintypes.ULONG),
+            ("SessionId", wintypes.ULONG),
+            ("UniqueProcessKey", ctypes.c_void_p),
+            ("PeakVirtualSize", ctypes.c_size_t),
+            ("VirtualSize", ctypes.c_size_t),
+            ("PageFaultCount", wintypes.ULONG),
+            ("PeakWorkingSetSize", ctypes.c_size_t),
+            ("WorkingSetSize", ctypes.c_size_t),
+            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+            ("PagefileUsage", ctypes.c_size_t),
+            ("PeakPagefileUsage", ctypes.c_size_t),
+            ("PrivatePageCount", ctypes.c_size_t),
+            ("ReadOperationCount", ctypes.c_longlong),
+            ("WriteOperationCount", ctypes.c_longlong),
+            ("OtherOperationCount", ctypes.c_longlong),
+            ("ReadTransferCount", ctypes.c_longlong),
+            ("WriteTransferCount", ctypes.c_longlong),
+            ("OtherTransferCount", ctypes.c_longlong),
+        ]
+
+    return SYSTEM_PROCESS_INFORMATION, SYSTEM_THREAD_INFORMATION
